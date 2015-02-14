@@ -11,7 +11,7 @@ import /init.environ.rc
 import /init.usb.rc
 import /init.${ro.hardware}.rc
 import /init.trace.rc
-import /init.bluetooth.rc
+import /init.b2g.rc
 
 on early-init
     # Set init and its forked children's oom_adj.
@@ -62,7 +62,7 @@ loglevel 3
     chmod 0660 /sys/fs/cgroup/memory/sw/tasks
 
     mkdir /system
-    mkdir /data 0771 system system
+    mkdir /data 0771 system drm
     mkdir /cache 0770 system cache
     mkdir /config 0500 root root
 
@@ -143,6 +143,11 @@ loglevel 3
 # checker programs.
     mkdir /dev/fscklogs 0770 root system
 
+# pstore/ramoops previous console log
+    mount pstore pstore /sys/fs/pstore
+    chown system log /sys/fs/pstore/console-ramoops
+    chmod 0440 /sys/fs/pstore/console-ramoops
+
 on post-fs
     # once everything is setup, no need to modify /
     mount rootfs rootfs / ro remount
@@ -156,6 +161,7 @@ on post-fs
     restorecon /cache
 
     # This may have been created by the recovery system with odd permissions
+    mkdir /cache/recovery
     chown system cache /cache/recovery
     chmod 0770 /cache/recovery
     # This may have been created by the recovery system with the wrong context.
@@ -177,7 +183,8 @@ on post-fs
     chmod 0440 /proc/last_kmsg
 
     # create the lost+found directories, so as to enforce our permissions
-    mkdir /cache/lost+found 0770 root root
+    # Moved to init.sony.rc in the products/common git
+    # mkdir /cache/lost+found 0770 root root
 
 on post-fs-data
     # We chown/chmod /data again so because mount is run as root + defaults
@@ -225,8 +232,7 @@ on post-fs-data
 
     # For security reasons, /data/local/tmp should always be empty.
     # Do not place files or directories in /data/local/tmp
-    exec /system/bin/rm -rf /data/local/tmp
-    mkdir /data/local/tmp 0771 root root
+    mkdir /data/local/tmp 0771 shell shell
     mkdir /data/data 0771 system system
     mkdir /data/app-private 0771 system system
     mkdir /data/app-asec 0700 root root
@@ -245,7 +251,8 @@ on post-fs-data
     chmod 0771 /data/resource-cache
 
     # create the lost+found directories, so as to enforce our permissions
-    mkdir /data/lost+found 0770 root root
+    # Moved to init.sony.rc in the products/common git
+    # mkdir /data/lost+found 0770 root root
 
     # create directory for DRM plug-ins - give drm the read/write access to
     # the following directory.
@@ -366,18 +373,16 @@ on boot
     setprop net.tcp.buffersize.wifi    524288,1048576,2097152,262144,524288,1048576
     setprop net.tcp.buffersize.lte     524288,1048576,2097152,262144,524288,1048576
     setprop net.tcp.buffersize.umts    4094,87380,110208,4096,16384,110208
-    setprop net.tcp.buffersize.hspa    4094,87380,1220608,4096,16384,1220608
-    setprop net.tcp.buffersize.hsupa   4094,87380,1220608,4096,16384,1220608
-    setprop net.tcp.buffersize.hsdpa   4094,87380,1220608,4096,16384,1220608
-    setprop net.tcp.buffersize.hspap   4094,87380,1220608,4096,16384,1220608
+    setprop net.tcp.buffersize.hspa    4094,87380,262144,4096,16384,262144
+    setprop net.tcp.buffersize.hsupa   4094,87380,262144,4096,16384,262144
+    setprop net.tcp.buffersize.hsdpa   4094,87380,1220608,4096,16384,110208
+    setprop net.tcp.buffersize.hspap   4094,87380,2097152,4096,16384,1220608
     setprop net.tcp.buffersize.edge    4093,26280,35040,4096,16384,35040
     setprop net.tcp.buffersize.gprs    4092,8760,11680,4096,8760,11680
     setprop net.tcp.buffersize.evdo    4094,87380,262144,4096,16384,262144
 
-# Assign TCP buffer thresholds to be ceiling value of technology maximums
-# Increased technology maximums should be reflected here.
-    write /proc/sys/net/core/rmem_max  2097152
-    write /proc/sys/net/core/wmem_max  2097152
+# Define default initial receive window size in segments.
+    setprop net.tcp.default_init_rwnd 60
 
     class_start core
     class_start main
@@ -414,6 +419,9 @@ on property:sys.powerctl=*
 # system server cannot write to /proc/sys files, so proxy it through init
 on property:sys.sysctl.extra_free_kbytes=*
     write /proc/sys/vm/extra_free_kbytes ${sys.sysctl.extra_free_kbytes}
+# "tcp_default_init_rwnd" Is too long!
+on property:sys.sysctl.tcp_def_init_rwnd=*
+    write /proc/sys/net/ipv4/tcp_default_init_rwnd ${sys.sysctl.tcp_def_init_rwnd}
 
 ## Daemon processes to be run by init.
 ##
@@ -506,13 +514,15 @@ service zygote /system/bin/app_process -Xzygote /system/bin --zygote --start-sys
 service drm /system/bin/drmserver
     class main
     user drm
-    group drm system inet drmrpc
+    group drm system inet drmrpc removable_rw trimarea sdcard_r
 
 service media /system/bin/mediaserver
     class main
     user media
-    group audio camera inet net_bt net_bt_admin net_bw_acct drmrpc mediadrm qcom_diag
+    group audio camera inet net_bt net_bt_admin net_bw_acct drmrpc mediadrm qcom_diag trimarea system credmgr_client
     ioprio rt 4
+    # SONY: restart qcamerasvr
+    onrestart restart qcamerasvr
 
 service bootanim /system/bin/bootanimation
     class main
@@ -572,10 +582,10 @@ service fakeperm /system/bin/fakeperm
     class main
     user root
 
-service gonksched /system/bin/gonksched
+service fakebattery /system/bin/fakebattery
     class main
     user root
 
-service b2g /system/bin/b2g.sh
+service sensorservice /system/bin/sensorservice
     class main
-    onrestart restart media
+    user root
